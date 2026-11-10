@@ -1,12 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  Menu,
-  Search,
-  Bell,
-  CalendarCheck,
-  Clock,
-  Users,
-} from "lucide-react";
+import { Menu, Search, Bell, CalendarCheck, Clock, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,10 +36,7 @@ function localDateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function getDisplayedReservationStatus(
-  reservation: Reservation,
-  now: Date,
-) {
+function getDisplayedReservationStatus(reservation: Reservation, now: Date) {
   const status = reservation.status.toLowerCase();
   if (INACTIVE_RESERVATION_STATUSES.has(status)) return reservation.status;
 
@@ -54,10 +44,11 @@ function getDisplayedReservationStatus(
     ? new Date(reservation.endAt.replace(" ", "T"))
     : null;
   const startAt = new Date(reservation.startAt.replace(" ", "T"));
-  const hasPassed = endAt && !Number.isNaN(endAt.getTime())
-    ? endAt < now
-    : !Number.isNaN(startAt.getTime()) &&
-      localDateKey(startAt) < localDateKey(now);
+  const hasPassed =
+    endAt && !Number.isNaN(endAt.getTime())
+      ? endAt < now
+      : !Number.isNaN(startAt.getTime()) &&
+        localDateKey(startAt) < localDateKey(now);
 
   return hasPassed ? "Completed" : reservation.status;
 }

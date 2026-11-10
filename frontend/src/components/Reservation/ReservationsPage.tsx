@@ -73,6 +73,20 @@ function toLocalDateTime(value: string) {
   return new Date(value.replace(" ", "T"));
 }
 
+function getDisplayedReservationStatus(reservation: Reservation, now: Date) {
+  const status = reservation.status.toLowerCase();
+  if (["cancelled", "completed", "no-show"].includes(status)) {
+    return reservation.status;
+  }
+
+  const endAt = toLocalDateTime(reservation.endAt);
+  const hasPassed =
+    (!Number.isNaN(endAt.getTime()) && endAt < now) ||
+    reservation.date < dateKey(now);
+
+  return hasPassed ? "Completed" : reservation.status;
+}
+
 function formatReservationTime(value: string) {
   const date = toLocalDateTime(value);
   return Number.isNaN(date.getTime())
@@ -149,9 +163,7 @@ export default function ReservationsPage() {
 
   const fetchReservations = async () => {
     try {
-      const res = await fetch(
-        apiUrl("Reservation/GetReservation.php"),
-      );
+      const res = await fetch(apiUrl("Reservation/GetReservation.php"));
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.message || "Failed to load reservations");
@@ -173,9 +185,7 @@ export default function ReservationsPage() {
 
     async function loadReservations() {
       try {
-        const res = await fetch(
-          apiUrl("Reservation/GetReservation.php"),
-        );
+        const res = await fetch(apiUrl("Reservation/GetReservation.php"));
         const data = await res.json();
         if (!res.ok || !data.success) {
           throw new Error(data.message || "Failed to load reservations");
@@ -196,9 +206,7 @@ export default function ReservationsPage() {
 
     async function loadTables() {
       try {
-        const res = await fetch(
-          apiUrl("Table/GetTable.php"),
-        );
+        const res = await fetch(apiUrl("Table/GetTable.php"));
         const data = await res.json();
         if (!res.ok || !data.success) {
           throw new Error(data.message || "Failed to load tables");
@@ -269,12 +277,7 @@ export default function ReservationsPage() {
 
   const selectableTables = tables.filter((table) =>
     selectedTime && endTime > selectedTime
-      ? isTimeAvailable(
-          selectedDate,
-          selectedTime,
-          table.table_id,
-          endTime,
-        )
+      ? isTimeAvailable(selectedDate, selectedTime, table.table_id, endTime)
       : SERVICE_TIMES.some((time) =>
           isTimeAvailable(selectedDate, time, table.table_id),
         ),
@@ -288,14 +291,13 @@ export default function ReservationsPage() {
   }
 
   const availableTimes =
-    selectedTableIds.length > 0 &&
-    selectedTableCapacity >= Number(partySize)
-    ? SERVICE_TIMES.filter((time) =>
-        selectedTableIds.every((id) =>
-          isTimeAvailable(selectedDate, time, id),
-        ),
-      )
-    : [];
+    selectedTableIds.length > 0 && selectedTableCapacity >= Number(partySize)
+      ? SERVICE_TIMES.filter((time) =>
+          selectedTableIds.every((id) =>
+            isTimeAvailable(selectedDate, time, id),
+          ),
+        )
+      : [];
   const intervalAvailable =
     Boolean(selectedTime) &&
     Boolean(endTime) &&
@@ -331,29 +333,28 @@ export default function ReservationsPage() {
       endTime <= selectedTime ||
       !intervalAvailable
     ) {
-      alert("Enter the customer name and phone, select one or more tables with enough seats, and choose an available time");
+      alert(
+        "Enter the customer name and phone, select one or more tables with enough seats, and choose an available time",
+      );
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch(
-        apiUrl("Reservation/CreateReservation.php"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            customer_name: customerName.trim(),
-            customer_phone: customerPhone.trim(),
-            party_size: parseInt(partySize),
-            table_ids: selectedTableIds,
-            start_at: toSqlDateTime(selectedDate, selectedTime),
-            end_at: toSqlDateTime(selectedDate, endTime),
-            occasion,
-            source: source.trim(),
-          }),
-        },
-      );
+      const res = await fetch(apiUrl("Reservation/CreateReservation.php"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          customer_name: customerName.trim(),
+          customer_phone: customerPhone.trim(),
+          party_size: parseInt(partySize),
+          table_ids: selectedTableIds,
+          start_at: toSqlDateTime(selectedDate, selectedTime),
+          end_at: toSqlDateTime(selectedDate, endTime),
+          occasion,
+          source: source.trim(),
+        }),
+      });
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message);
 
@@ -377,14 +378,11 @@ export default function ReservationsPage() {
     if (!confirm("Are you sure you want to delete this reservation?")) return;
     setDeletingId(id);
     try {
-      const res = await fetch(
-        apiUrl("Reservation/DeleteReservation.php"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ reservation_id: id }),
-        },
-      );
+      const res = await fetch(apiUrl("Reservation/DeleteReservation.php"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reservation_id: id }),
+      });
       const data = await res.json();
       if (!res.ok || !data.success) {
         throw new Error(data.message || "Failed to delete reservation");
@@ -431,13 +429,6 @@ export default function ReservationsPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <Button
-              type="button"
-              className="gap-2"
-              onClick={() => openBooking()}
-            >
-              <Plus className="size-4" /> New Booking
-            </Button>
             <DialogContent className="grid-rows-[auto_minmax(0,1fr)] overflow-hidden max-h-[calc(100dvh-2rem)] sm:max-w-md">
               <DialogHeader>
                 <DialogTitle>Create New Reservation</DialogTitle>
@@ -447,7 +438,9 @@ export default function ReservationsPage() {
                 className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-2"
               >
                 <div className="space-y-1">
-                  <Label htmlFor="reservation-customer-name">Customer Name</Label>
+                  <Label htmlFor="reservation-customer-name">
+                    Customer Name
+                  </Label>
                   <Input
                     id="reservation-customer-name"
                     placeholder="Enter customer name"
@@ -457,7 +450,9 @@ export default function ReservationsPage() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label htmlFor="reservation-customer-phone">Phone Number</Label>
+                  <Label htmlFor="reservation-customer-phone">
+                    Phone Number
+                  </Label>
                   <Input
                     id="reservation-customer-phone"
                     type="tel"
@@ -776,14 +771,19 @@ export default function ReservationsPage() {
                     dateStr >= dateKey(now) &&
                     !hasAvailability;
                   const isSelected = selectedDate === dateStr;
+                  const isPastDate = dateStr < dateKey(now);
 
                   return (
                     <button
                       key={dateStr}
                       type="button"
-                      onClick={() => openBooking(dateStr)}
-                      disabled={dateStr < dateKey(now) || hasNoAvailability}
-                      className={`h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all disabled:cursor-not-allowed disabled:opacity-40 ${
+                      onClick={() =>
+                        isPastDate || hasNoAvailability
+                          ? setSelectedDate(dateStr)
+                          : openBooking(dateStr)
+                      }
+                      aria-label={`${formatDate(dateStr)}${hasNoAvailability ? ", unavailable for new bookings" : ""}${hasBookings ? `, ${dayReservations.length} booking${dayReservations.length > 1 ? "s" : ""}` : ", no bookings"}`}
+                      className={`h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all ${
                         isSelected
                           ? "border-primary bg-primary/5 ring-2 ring-primary/20 shadow-sm"
                           : "border-neutral-200 bg-white dark:bg-neutral-900"
@@ -856,7 +856,7 @@ export default function ReservationsPage() {
                           variant="default"
                           className="bg-emerald-600 text-[10px]"
                         >
-                          {res.status}
+                          {getDisplayedReservationStatus(res, now)}
                         </Badge>
                         <Button
                           variant="ghost"

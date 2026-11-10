@@ -3,7 +3,6 @@ import {
   CalendarCheck,
   TableProperties,
   Users,
-  Settings,
   LogOut,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -26,7 +25,6 @@ export default function Sidebar({
     { id: "reservations", label: "Reservations", icon: CalendarCheck },
     { id: "tables", label: "Table Management", icon: TableProperties },
     { id: "users", label: "User Management", icon: Users },
-    { id: "settings", label: "Local Settings", icon: Settings },
   ];
 
   return (
@@ -44,24 +42,26 @@ export default function Sidebar({
       </div>
 
       <nav className="space-y-1.5 flex-1">
-        {navItems.filter((item) => item.id !== "users" || canManageUsers).map((item) => {
-          const Icon = item.icon;
-          const isActive = activeNav === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => onSelectNav(item.id)}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                isActive
-                  ? "bg-neutral-900 text-white dark:bg-neutral-50 dark:text-neutral-900"
-                  : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
-              }`}
-            >
-              <Icon className="size-4" />
-              {item.label}
-            </button>
-          );
-        })}
+        {navItems
+          .filter((item) => item.id !== "users" || canManageUsers)
+          .map((item) => {
+            const Icon = item.icon;
+            const isActive = activeNav === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => onSelectNav(item.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? "bg-neutral-900 text-white dark:bg-neutral-50 dark:text-neutral-900"
+                    : "text-neutral-600 hover:bg-neutral-100 dark:text-neutral-400 dark:hover:bg-neutral-800"
+                }`}
+              >
+                <Icon className="size-4" />
+                {item.label}
+              </button>
+            );
+          })}
       </nav>
 
       <div className="pt-4 border-t border-neutral-200 dark:border-neutral-800">
