@@ -8,6 +8,7 @@ import {
   Users,
   Loader2,
   Plus,
+  Pencil,
   Trash2,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,11 +53,18 @@ const SERVICE_TIMES = [
   "12:00",
   "13:00",
   "14:00",
+  "15:00",
+  "16:00",
   "17:00",
   "18:00",
   "19:00",
   "20:00",
   "21:00",
+  "22:00",
+  "23:00",
+  "00:00",
+  "01:00",
+  "02:00",
 ];
 const RESERVATION_DURATION_MINUTES = 90;
 
@@ -64,8 +72,15 @@ function dateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
 
-function toSqlDateTime(date: string, time: string) {
+function timeKey(date: Date) {
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function toSqlDateTime(date: string, time: string, startTime?: string) {
   const value = new Date(`${date}T${time}:00`);
+  if (startTime && time < startTime) {
+    value.setDate(value.getDate() + 1);
+  }
   return `${dateKey(value)} ${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}:00`;
 }
 
@@ -132,8 +147,11 @@ export default function ReservationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [editingReservationId, setEditingReservationId] = useState<number | null>(
+    null,
+  );
 
-  // Form state for new booking
+  // Reservation form state
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [partySize, setPartySize] = useState("2");
@@ -249,16 +267,24 @@ export default function ReservationsPage() {
     time: string,
     availableTableId: number,
     intervalEndTime?: string,
+    ignoredReservationId?: number | null,
   ) {
     const start = new Date(`${date}T${time}:00`);
     const end = intervalEndTime
       ? new Date(`${date}T${intervalEndTime}:00`)
       : new Date(start.getTime() + RESERVATION_DURATION_MINUTES * 60000);
+    if (intervalEndTime && intervalEndTime < time) {
+      end.setDate(end.getDate() + 1);
+    }
     if (end <= start) return false;
-    const isPast = date === dateKey(now) && start.getTime() <= now.getTime();
+    const isPast =
+      !ignoredReservationId &&
+      date === dateKey(now) &&
+      start.getTime() <= now.getTime();
     if (isPast) return false;
 
     return !reservations.some((reservation) => {
+      if (reservation.id === ignoredReservationId) return false;
       if (
         ["cancelled", "completed", "no-show"].includes(
           reservation.status.toLowerCase(),
@@ -276,10 +302,22 @@ export default function ReservationsPage() {
   }
 
   const selectableTables = tables.filter((table) =>
-    selectedTime && endTime > selectedTime
-      ? isTimeAvailable(selectedDate, selectedTime, table.table_id, endTime)
+    selectedTime && endTime && endTime !== selectedTime
+      ? isTimeAvailable(
+          selectedDate,
+          selectedTime,
+          table.table_id,
+          endTime,
+          editingReservationId,
+        )
       : SERVICE_TIMES.some((time) =>
-          isTimeAvailable(selectedDate, time, table.table_id),
+          isTimeAvailable(
+            selectedDate,
+            time,
+            table.table_id,
+            undefined,
+            editingReservationId,
+          ),
         ),
   );
 
@@ -294,23 +332,60 @@ export default function ReservationsPage() {
     selectedTableIds.length > 0 && selectedTableCapacity >= Number(partySize)
       ? SERVICE_TIMES.filter((time) =>
           selectedTableIds.every((id) =>
-            isTimeAvailable(selectedDate, time, id),
+            isTimeAvailable(
+              selectedDate,
+              time,
+              id,
+              undefined,
+              editingReservationId,
+            ),
           ),
         )
       : [];
   const intervalAvailable =
     Boolean(selectedTime) &&
     Boolean(endTime) &&
-    endTime > selectedTime &&
+    endTime !== selectedTime &&
     selectedTableIds.every((id) =>
-      isTimeAvailable(selectedDate, selectedTime, id, endTime),
+      isTimeAvailable(
+        selectedDate,
+        selectedTime,
+        id,
+        endTime,
+        editingReservationId,
+      ),
     );
 
   function openBooking(date = selectedDate) {
     setSelectedDate(date);
     setCurrentDate(new Date(`${date}T00:00:00`));
+    setEditingReservationId(null);
+    setCustomerName("");
+    setCustomerPhone("");
+    setPartySize("2");
+    setTableIds([]);
     setSelectedTime("");
     setEndTime("");
+    setSource("Walk-in");
+    setOccasion("");
+    setDialogOpen(true);
+  }
+
+  function openEditReservation(reservation: Reservation) {
+    const start = toLocalDateTime(reservation.startAt);
+    const end = toLocalDateTime(reservation.endAt);
+    const date = dateKey(start);
+    setEditingReservationId(reservation.id);
+    setSelectedDate(date);
+    setCurrentDate(new Date(`${date}T00:00:00`));
+    setCustomerName(reservation.customer);
+    setCustomerPhone(reservation.phone ?? "");
+    setPartySize(String(reservation.guests));
+    setTableIds(reservation.tableIds.map(String));
+    setSelectedTime(timeKey(start));
+    setEndTime(timeKey(end));
+    setSource(reservation.source || "Walk-in");
+    setOccasion(reservation.occasion || "");
     setDialogOpen(true);
   }
 
@@ -321,40 +396,46 @@ export default function ReservationsPage() {
     setEndTime("");
   }
 
-  const handleCreate = async (e: React.FormEvent) => {
+  const handleSubmitReservation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (
       !customerName.trim() ||
-      !customerPhone.trim() ||
       selectedTableIds.length === 0 ||
       selectedTableCapacity < Number(partySize) ||
       !selectedTime ||
       !endTime ||
-      endTime <= selectedTime ||
       !intervalAvailable
     ) {
       alert(
-        "Enter the customer name and phone, select one or more tables with enough seats, and choose an available time",
+        "Enter the customer name, select one or more tables with enough seats, and choose an available time",
       );
       return;
     }
 
     setSubmitting(true);
     try {
-      const res = await fetch(apiUrl("Reservation/CreateReservation.php"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customer_name: customerName.trim(),
-          customer_phone: customerPhone.trim(),
-          party_size: parseInt(partySize),
-          table_ids: selectedTableIds,
-          start_at: toSqlDateTime(selectedDate, selectedTime),
-          end_at: toSqlDateTime(selectedDate, endTime),
-          occasion,
-          source: source.trim(),
-        }),
-      });
+      const res = await fetch(
+        apiUrl(
+          editingReservationId
+            ? "Reservation/UpdateReservation.php"
+            : "Reservation/CreateReservation.php",
+        ),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reservation_id: editingReservationId,
+            customer_name: customerName.trim(),
+            customer_phone: customerPhone.trim(),
+            party_size: parseInt(partySize),
+            table_ids: selectedTableIds,
+            start_at: toSqlDateTime(selectedDate, selectedTime),
+            end_at: toSqlDateTime(selectedDate, endTime, selectedTime),
+            occasion,
+            source: source.trim(),
+          }),
+        },
+      );
       const data = await res.json();
       if (!res.ok || !data.success) throw new Error(data.message);
 
@@ -366,9 +447,14 @@ export default function ReservationsPage() {
       setOccasion("");
       setSelectedTime("");
       setEndTime("");
+      setEditingReservationId(null);
       void fetchReservations();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Error creating reservation");
+      alert(
+        err instanceof Error
+          ? err.message
+          : `Error ${editingReservationId ? "updating" : "creating"} reservation`,
+      );
     } finally {
       setSubmitting(false);
     }
@@ -431,10 +517,14 @@ export default function ReservationsPage() {
           <div className="flex items-center gap-3">
             <DialogContent className="grid-rows-[auto_minmax(0,1fr)] overflow-hidden max-h-[calc(100dvh-2rem)] sm:max-w-md">
               <DialogHeader>
-                <DialogTitle>Create New Reservation</DialogTitle>
+                <DialogTitle>
+                  {editingReservationId
+                    ? "Edit Reservation"
+                    : "Create New Reservation"}
+                </DialogTitle>
               </DialogHeader>
               <form
-                onSubmit={handleCreate}
+                onSubmit={handleSubmitReservation}
                 className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-2"
               >
                 <div className="space-y-1">
@@ -460,7 +550,6 @@ export default function ReservationsPage() {
                     placeholder="Enter customer phone number"
                     value={customerPhone}
                     onChange={(e) => setCustomerPhone(e.target.value)}
-                    required
                   />
                 </div>
                 <div className="space-y-1">
@@ -468,7 +557,7 @@ export default function ReservationsPage() {
                   <Input
                     id="reservation-date"
                     type="date"
-                    min={dateKey(now)}
+                    min={editingReservationId ? undefined : dateKey(now)}
                     value={selectedDate}
                     onChange={(e) => changeBookingDate(e.target.value)}
                     required
@@ -605,7 +694,7 @@ export default function ReservationsPage() {
                     <p className="text-muted-foreground rounded-md border border-dashed px-3 py-3 text-sm">
                       {selectedTableIds.length > 0
                         ? "No available times for this table on the selected date."
-                        : "Choose one or more tables to see available times."}
+                        : "Choose one or more tables to see ls."}
                     </p>
                   )}
                 </div>
@@ -615,12 +704,11 @@ export default function ReservationsPage() {
                     <Input
                       id="reservation-end-time"
                       type="time"
-                      min={selectedTime}
                       value={endTime}
                       onChange={(e) => {
                         const nextEndTime = e.target.value;
                         setEndTime(nextEndTime);
-                        if (nextEndTime > selectedTime) {
+                        if (nextEndTime && nextEndTime !== selectedTime) {
                           setTableIds((current) =>
                             current.filter((id) =>
                               isTimeAvailable(
@@ -628,6 +716,7 @@ export default function ReservationsPage() {
                                 selectedTime,
                                 Number(id),
                                 nextEndTime,
+                                editingReservationId,
                               ),
                             ),
                           );
@@ -636,18 +725,13 @@ export default function ReservationsPage() {
                       required
                     />
                     {endTime &&
-                      endTime > selectedTime &&
+                      endTime !== selectedTime &&
                       !intervalAvailable && (
                         <p className="text-destructive text-xs">
                           The selected tables are not available for this time
                           range.
                         </p>
                       )}
-                    {endTime && endTime <= selectedTime && (
-                      <p className="text-destructive text-xs">
-                        End time must be later than start time.
-                      </p>
-                    )}
                   </div>
                 )}
                 <div className="space-y-1">
@@ -681,19 +765,19 @@ export default function ReservationsPage() {
                   disabled={
                     submitting ||
                     !customerName.trim() ||
-                    !customerPhone.trim() ||
                     selectedTableIds.length === 0 ||
                     selectedTableCapacity < Number(partySize) ||
                     !selectedTime ||
                     !endTime ||
-                    endTime <= selectedTime ||
                     !intervalAvailable
                   }
                 >
                   {submitting && (
                     <Loader2 className="size-4 animate-spin mr-2" />
                   )}{" "}
-                  Save Reservation
+                  {editingReservationId
+                    ? "Update Reservation"
+                    : "Save Reservation"}
                 </Button>
               </form>
             </DialogContent>
@@ -858,6 +942,16 @@ export default function ReservationsPage() {
                         >
                           {getDisplayedReservationStatus(res, now)}
                         </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="size-7 text-primary"
+                          aria-label={`Edit reservation ${res.code}`}
+                          title="Edit reservation"
+                          onClick={() => openEditReservation(res)}
+                        >
+                          <Pencil className="size-3.5" />
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"

@@ -31,6 +31,17 @@ try {
                 (SELECT GROUP_CONCAT(rt.table_id)
                  FROM reservation_tables rt
                  WHERE rt.reservation_id = r.reservation_id) AS table_ids,
+                (SELECT GROUP_CONCAT(
+                    CONCAT(
+                        t.table_number,
+                        IF(t.table_name IS NOT NULL AND t.table_name <> '', CONCAT(' (', t.table_name, ')'), '')
+                    )
+                    ORDER BY t.table_number
+                    SEPARATOR ', '
+                 )
+                 FROM reservation_tables rt
+                 JOIN restaurant_tables t ON t.table_id = rt.table_id
+                 WHERE rt.reservation_id = r.reservation_id) AS table_names,
                 COALESCE(c.full_name, CONCAT('Customer #', r.customer_id)) AS customer_name,
                 c.phone AS customer_phone,
                 c.email AS customer_email,
@@ -53,6 +64,7 @@ try {
             "customer" => $res['customer_name'],
             "phone" => $res['customer_phone'],
             "email" => $res['customer_email'],
+            "table" => $res['table_names'] ?? "—",
             "date" => $dateTime->format('Y-m-d'),
             "time" => $dateTime->format('H:i'),
             "startAt" => $dateTime->format('Y-m-d H:i:s'),

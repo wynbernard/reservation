@@ -15,6 +15,7 @@ import { apiUrl } from "@/lib/api";
 type Reservation = {
   id: number;
   customer: string;
+  table?: string;
   startAt: string;
   endAt?: string;
   status: string;
@@ -343,12 +344,13 @@ export default function Dashboard({
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="overflow-x-auto">
+                  <div className="max-h-[32rem] overflow-auto">
                     <table className="w-full text-left text-sm">
-                      <thead className="border-b border-neutral-200 dark:border-neutral-800 text-neutral-500 text-xs uppercase">
+                      <thead className="sticky top-0 z-10 border-b border-neutral-200 bg-background text-neutral-500 text-xs uppercase dark:border-neutral-800">
                         <tr>
                           <th className="pb-3 font-medium">Customer</th>
                           <th className="pb-3 font-medium">Date / Time</th>
+                          <th className="pb-3 font-medium">Tables</th>
                           <th className="pb-3 font-medium">Source</th>
                           <th className="pb-3 font-medium">Status</th>
                         </tr>
@@ -357,7 +359,7 @@ export default function Dashboard({
                         {reservationsLoading ? (
                           <tr>
                             <td
-                              colSpan={4}
+                              colSpan={5}
                               className="py-6 text-center text-neutral-500"
                             >
                               Loading recent reservations…
@@ -366,14 +368,14 @@ export default function Dashboard({
                         ) : reservationsError ? (
                           <tr>
                             <td
-                              colSpan={4}
+                              colSpan={5}
                               className="py-6 text-center text-red-600"
                             >
                               {reservationsError}
                             </td>
                           </tr>
                         ) : recentReservations.length ? (
-                          recentReservations.slice(0, 5).map((reservation) => {
+                          recentReservations.map((reservation) => {
                             const startAt = new Date(
                               reservation.startAt.replace(" ", "T"),
                             );
@@ -404,6 +406,9 @@ export default function Dashboard({
                                       })}
                                 </td>
                                 <td className="py-3 text-neutral-500">
+                                  {reservation.table}
+                                </td>
+                                <td className="py-3 text-neutral-500">
                                   {reservation.source || "—"}
                                 </td>
                                 <td className="py-3">
@@ -424,7 +429,7 @@ export default function Dashboard({
                         ) : (
                           <tr>
                             <td
-                              colSpan={4}
+                              colSpan={5}
                               className="py-6 text-center text-neutral-500"
                             >
                               No reservations found.

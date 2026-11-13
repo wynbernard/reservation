@@ -41,9 +41,9 @@ if (is_array($raw_table_ids)) {
     }
 }
 
-if ($customer_name === '' || $customer_phone === '' || !$party_size || count($table_ids) < 1 || !$start_at) {
+if ($customer_name === '' || !$party_size || count($table_ids) < 1 || !$start_at) {
     http_response_code(400);
-    echo json_encode(["success" => false, "message" => "Customer name, phone, party size, one or more tables, and reservation time are required"]);
+    echo json_encode(["success" => false, "message" => "Customer name, party size, one or more tables, and reservation time are required"]);
     exit();
 }
 
