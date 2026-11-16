@@ -1,12 +1,14 @@
 import { useState, useEffect } from "react";
 import {
   CalendarCheck,
+  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
   User,
   Users,
   Loader2,
+  Minus,
   Plus,
   Pencil,
   Trash2,
@@ -66,7 +68,9 @@ const SERVICE_TIMES = [
   "01:00",
   "02:00",
 ];
+const SOURCES = ["Walk-in", "Phone", "Online"];
 const RESERVATION_DURATION_MINUTES = 90;
+const END_TIME_STEP_MINUTES = 15;
 
 function dateKey(date: Date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
@@ -76,11 +80,24 @@ function timeKey(date: Date) {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
-function toSqlDateTime(date: string, time: string, startTime?: string) {
+function toServiceDateTime(date: string, time: string) {
   const value = new Date(`${date}T${time}:00`);
-  if (startTime && time < startTime) {
+  if (time < SERVICE_TIMES[0]) {
     value.setDate(value.getDate() + 1);
   }
+  return value;
+}
+
+function getServiceDate(date: Date) {
+  const serviceDate = new Date(date);
+  if (timeKey(date) < SERVICE_TIMES[0]) {
+    serviceDate.setDate(serviceDate.getDate() - 1);
+  }
+  return dateKey(serviceDate);
+}
+
+function toSqlDateTime(date: string, time: string) {
+  const value = toServiceDateTime(date, time);
   return `${dateKey(value)} ${String(value.getHours()).padStart(2, "0")}:${String(value.getMinutes()).padStart(2, "0")}:00`;
 }
 
@@ -133,6 +150,61 @@ function addMinutesToTime(time: string, minutes: number) {
   return `${String(end.getHours()).padStart(2, "0")}:${String(end.getMinutes()).padStart(2, "0")}`;
 }
 
+function getEndTimeCandidates(
+  date: string,
+  startTime: string,
+  additionalTime?: string,
+) {
+  const start = toServiceDateTime(date, startTime);
+  const lastEnd = toServiceDateTime(date, "02:00");
+
+  const candidates: string[] = [];
+  for (
+    let candidate = new Date(start.getTime() + END_TIME_STEP_MINUTES * 60000);
+    candidate <= lastEnd;
+    candidate = new Date(candidate.getTime() + END_TIME_STEP_MINUTES * 60000)
+  ) {
+    const time = timeKey(candidate);
+    if (!candidates.includes(time)) candidates.push(time);
+  }
+
+  if (additionalTime && !candidates.includes(additionalTime)) {
+    const additionalEnd = toServiceDateTime(date, additionalTime);
+    if (additionalEnd > start && additionalEnd <= lastEnd) {
+      candidates.push(additionalTime);
+    }
+  }
+  return candidates;
+}
+
+function StepHeading({
+  step,
+  title,
+  hint,
+  done,
+}: {
+  step: number;
+  title: string;
+  hint?: string;
+  done?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <span
+        className={`flex size-6 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+          done ? "bg-emerald-600 text-white" : "bg-primary/10 text-primary"
+        }`}
+      >
+        {done ? <Check className="size-3.5" /> : step}
+      </span>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold leading-tight">{title}</p>
+        {hint && <p className="text-muted-foreground text-xs">{hint}</p>}
+      </div>
+    </div>
+  );
+}
+
 export default function ReservationsPage() {
   const [now] = useState(() => new Date());
   const [currentDate, setCurrentDate] = useState(() => {
@@ -147,9 +219,9 @@ export default function ReservationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [editingReservationId, setEditingReservationId] = useState<number | null>(
-    null,
-  );
+  const [editingReservationId, setEditingReservationId] = useState<
+    number | null
+  >(null);
 
   // Reservation form state
   const [customerName, setCustomerName] = useState("");
@@ -261,6 +333,9 @@ export default function ReservationsPage() {
   const selectedTableCapacity = tables
     .filter((table) => selectedTableIds.includes(table.table_id))
     .reduce((total, table) => total + table.capacity, 0);
+  const guestCount = Number(partySize) || 0;
+  const tablesFitParty =
+    selectedTableIds.length > 0 && selectedTableCapacity >= guestCount;
 
   function isTimeAvailable(
     date: string,
@@ -269,17 +344,13 @@ export default function ReservationsPage() {
     intervalEndTime?: string,
     ignoredReservationId?: number | null,
   ) {
-    const start = new Date(`${date}T${time}:00`);
+    const start = toServiceDateTime(date, time);
     const end = intervalEndTime
-      ? new Date(`${date}T${intervalEndTime}:00`)
+      ? toServiceDateTime(date, intervalEndTime)
       : new Date(start.getTime() + RESERVATION_DURATION_MINUTES * 60000);
-    if (intervalEndTime && intervalEndTime < time) {
-      end.setDate(end.getDate() + 1);
-    }
     if (end <= start) return false;
     const isPast =
       !ignoredReservationId &&
-      date === dateKey(now) &&
       start.getTime() <= now.getTime();
     if (isPast) return false;
 
@@ -301,36 +372,58 @@ export default function ReservationsPage() {
     });
   }
 
-  const selectableTables = tables.filter((table) =>
-    selectedTime && endTime && endTime !== selectedTime
-      ? isTimeAvailable(
+  function getAvailableEndTimes(
+    date: string,
+    startTime: string,
+    availableTableIds: number[],
+    additionalTime?: string,
+  ) {
+    return getEndTimeCandidates(date, startTime, additionalTime).filter(
+      (time) =>
+        availableTableIds.length > 0 &&
+        availableTableIds.every((id) =>
+          isTimeAvailable(date, startTime, id, time, editingReservationId),
+        ),
+    );
+  }
+
+  const selectableTables = tables.filter((table) => {
+    if (selectedTime) {
+      return isTimeAvailable(
           selectedDate,
           selectedTime,
           table.table_id,
-          endTime,
+          endTime && endTime !== selectedTime ? endTime : undefined,
           editingReservationId,
-        )
-      : SERVICE_TIMES.some((time) =>
-          isTimeAvailable(
-            selectedDate,
-            time,
-            table.table_id,
-            undefined,
-            editingReservationId,
-          ),
-        ),
-  );
+        );
+    }
+
+    return SERVICE_TIMES.some((time) =>
+      isTimeAvailable(
+        selectedDate,
+        time,
+        table.table_id,
+        undefined,
+        editingReservationId,
+      ),
+    );
+  });
+  const selectableTableIds = new Set(selectableTables.map((t) => t.table_id));
 
   function hasAvailableTable(date: string) {
-    if (loading || tablesLoading || date < dateKey(now)) return false;
+    if (loading || tablesLoading) return false;
     return tables.some((table) =>
       SERVICE_TIMES.some((time) => isTimeAvailable(date, time, table.table_id)),
     );
   }
 
-  const availableTimes =
-    selectedTableIds.length > 0 && selectedTableCapacity >= Number(partySize)
-      ? SERVICE_TIMES.filter((time) =>
+  const candidateTimes =
+    selectedTime && !SERVICE_TIMES.includes(selectedTime)
+      ? [...SERVICE_TIMES, selectedTime]
+      : SERVICE_TIMES;
+  const availableTimes = tablesFitParty
+    ? candidateTimes.filter(
+        (time) =>
           selectedTableIds.every((id) =>
             isTimeAvailable(
               selectedDate,
@@ -339,7 +432,17 @@ export default function ReservationsPage() {
               undefined,
               editingReservationId,
             ),
-          ),
+          ) &&
+          getAvailableEndTimes(selectedDate, time, selectedTableIds).length > 0,
+      )
+    : [];
+  const availableEndTimes =
+    selectedTime && tablesFitParty
+      ? getAvailableEndTimes(
+          selectedDate,
+          selectedTime,
+          selectedTableIds,
+          endTime,
         )
       : [];
   const intervalAvailable =
@@ -355,6 +458,24 @@ export default function ReservationsPage() {
         editingReservationId,
       ),
     );
+
+  const selectedTableLabels = tables
+    .filter((table) => selectedTableIds.includes(table.table_id))
+    .map((table) => table.table_number)
+    .join(", ");
+
+  // What is still missing before the reservation can be saved
+  const missingStep = !tablesFitParty
+    ? selectedTableIds.length === 0
+      ? "Choose at least one table"
+      : "Add a table to seat the whole party"
+    : !selectedTime
+      ? "Choose a start time"
+      : !endTime || !intervalAvailable
+        ? "Choose an end time"
+        : !customerName.trim()
+          ? "Enter the customer name"
+          : "";
 
   function openBooking(date = selectedDate) {
     setSelectedDate(date);
@@ -374,14 +495,26 @@ export default function ReservationsPage() {
   function openEditReservation(reservation: Reservation) {
     const start = toLocalDateTime(reservation.startAt);
     const end = toLocalDateTime(reservation.endAt);
-    const date = dateKey(start);
+    const date = getServiceDate(start);
     setEditingReservationId(reservation.id);
     setSelectedDate(date);
     setCurrentDate(new Date(`${date}T00:00:00`));
     setCustomerName(reservation.customer);
     setCustomerPhone(reservation.phone ?? "");
     setPartySize(String(reservation.guests));
-    setTableIds(reservation.tableIds.map(String));
+    setTableIds(
+      reservation.tableIds
+        .filter((id) =>
+          isTimeAvailable(
+            date,
+            timeKey(start),
+            id,
+            timeKey(end),
+            reservation.id,
+          ),
+        )
+        .map(String),
+    );
     setSelectedTime(timeKey(start));
     setEndTime(timeKey(end));
     setSource(reservation.source || "Walk-in");
@@ -392,23 +525,106 @@ export default function ReservationsPage() {
   function changeBookingDate(date: string) {
     setSelectedDate(date);
     setCurrentDate(new Date(`${date}T00:00:00`));
+    setTableIds([]);
     setSelectedTime("");
     setEndTime("");
   }
 
+  function changePartySize(value: string) {
+    setPartySize(value);
+    setTableIds([]);
+    setSelectedTime("");
+    setEndTime("");
+  }
+
+  function toggleTable(table: RestaurantTable) {
+    const id = table.table_id.toString();
+    const nextTableIds = tableIds.includes(id)
+      ? tableIds.filter((item) => item !== id)
+      : [...tableIds, id];
+    setTableIds(nextTableIds);
+
+    const nextCapacity = tables
+      .filter((item) => nextTableIds.includes(item.table_id.toString()))
+      .reduce((total, item) => total + item.capacity, 0);
+    const selectedTimeAvailable =
+      nextCapacity >= guestCount &&
+      nextTableIds.every((tid) =>
+        isTimeAvailable(
+          selectedDate,
+          selectedTime,
+          Number(tid),
+          undefined,
+          editingReservationId,
+        ),
+      );
+
+    if (selectedTime && !selectedTimeAvailable) {
+      setSelectedTime("");
+      setEndTime("");
+    } else if (selectedTime) {
+      const nextEndTimes = getAvailableEndTimes(
+        selectedDate,
+        selectedTime,
+        nextTableIds.map(Number),
+        endTime,
+      );
+      const defaultEndTime = addMinutesToTime(
+        selectedTime,
+        RESERVATION_DURATION_MINUTES,
+      );
+      setEndTime(
+        nextEndTimes.includes(endTime)
+          ? endTime
+          : nextEndTimes.includes(defaultEndTime)
+            ? defaultEndTime
+            : nextEndTimes[0] || "",
+      );
+    }
+  }
+
+  function chooseStartTime(nextStartTime: string) {
+    setSelectedTime(nextStartTime);
+    if (!nextStartTime) {
+      setEndTime("");
+      return;
+    }
+
+    const availableSelectedTableIds = selectedTableIds.filter((id) =>
+      isTimeAvailable(
+        selectedDate,
+        nextStartTime,
+        id,
+        undefined,
+        editingReservationId,
+      ),
+    );
+    setTableIds(availableSelectedTableIds.map(String));
+    const nextCapacity = tables
+      .filter((table) => availableSelectedTableIds.includes(table.table_id))
+      .reduce((total, table) => total + table.capacity, 0);
+    const nextDefaultEndTime = nextStartTime
+      ? addMinutesToTime(nextStartTime, RESERVATION_DURATION_MINUTES)
+      : "";
+    const nextAvailableEndTimes =
+      availableSelectedTableIds.length > 0 && nextCapacity >= guestCount
+        ? getAvailableEndTimes(
+            selectedDate,
+            nextStartTime,
+            availableSelectedTableIds,
+          )
+        : [];
+    setEndTime(
+      nextAvailableEndTimes.includes(nextDefaultEndTime)
+        ? nextDefaultEndTime
+        : nextAvailableEndTimes[0] || "",
+    );
+  }
+
   const handleSubmitReservation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (
-      !customerName.trim() ||
-      selectedTableIds.length === 0 ||
-      selectedTableCapacity < Number(partySize) ||
-      !selectedTime ||
-      !endTime ||
-      !intervalAvailable
-    ) {
-      alert(
-        "Enter the customer name, select one or more tables with enough seats, and choose an available time",
-      );
+    if (missingStep) {
+      alert(missingStep);
       return;
     }
 
@@ -430,7 +646,7 @@ export default function ReservationsPage() {
             party_size: parseInt(partySize),
             table_ids: selectedTableIds,
             start_at: toSqlDateTime(selectedDate, selectedTime),
-            end_at: toSqlDateTime(selectedDate, endTime, selectedTime),
+            end_at: toSqlDateTime(selectedDate, endTime),
             occasion,
             source: source.trim(),
           }),
@@ -499,8 +715,12 @@ export default function ReservationsPage() {
   }
 
   const selectedDateReservations = reservations.filter(
-    (r) => r.date === selectedDate,
+    (reservation) =>
+      getServiceDate(toLocalDateTime(reservation.startAt)) === selectedDate,
   );
+
+  const selectClass =
+    "border-input bg-background h-10 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
 
   return (
     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
@@ -515,273 +735,9 @@ export default function ReservationsPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <DialogContent className="grid-rows-[auto_minmax(0,1fr)] overflow-hidden max-h-[calc(100dvh-2rem)] sm:max-w-md">
-              <DialogHeader>
-                <DialogTitle>
-                  {editingReservationId
-                    ? "Edit Reservation"
-                    : "Create New Reservation"}
-                </DialogTitle>
-              </DialogHeader>
-              <form
-                onSubmit={handleSubmitReservation}
-                className="min-h-0 space-y-4 overflow-y-auto overscroll-contain pr-2"
-              >
-                <div className="space-y-1">
-                  <Label htmlFor="reservation-customer-name">
-                    Customer Name
-                  </Label>
-                  <Input
-                    id="reservation-customer-name"
-                    placeholder="Enter customer name"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="reservation-customer-phone">
-                    Phone Number
-                  </Label>
-                  <Input
-                    id="reservation-customer-phone"
-                    type="tel"
-                    autoComplete="tel"
-                    placeholder="Enter customer phone number"
-                    value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="reservation-date">Date</Label>
-                  <Input
-                    id="reservation-date"
-                    type="date"
-                    min={editingReservationId ? undefined : dateKey(now)}
-                    value={selectedDate}
-                    onChange={(e) => changeBookingDate(e.target.value)}
-                    required
-                  />
-                </div>
-                <div
-                  aria-live="polite"
-                  className="grid grid-cols-3 gap-2 rounded-md border bg-muted/40 p-3 text-sm"
-                >
-                  <div className="min-w-0">
-                    <p className="text-muted-foreground text-xs">Date</p>
-                    <p className="truncate font-medium">
-                      {selectedDate ? formatDate(selectedDate) : "—"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground text-xs">Start</p>
-                    <p className="font-medium">
-                      {selectedTime ? formatTime(selectedTime) : "—"}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-muted-foreground text-xs">End</p>
-                    <p className="font-medium">
-                      {endTime ? formatTime(endTime) : "—"}
-                    </p>
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="reservation-party-size">Party Size</Label>
-                  <Input
-                    id="reservation-party-size"
-                    type="number"
-                    min="1"
-                    value={partySize}
-                    onChange={(e) => {
-                      setPartySize(e.target.value);
-                      setTableIds([]);
-                      setSelectedTime("");
-                    }}
-                    required
-                  />
-                </div>
-                <div className="space-y-1">
-                  <Label>Tables</Label>
-                  <div className="max-h-32 space-y-2 overflow-y-auto rounded-md border p-3">
-                    {tablesLoading ? (
-                      <p className="text-muted-foreground text-sm">
-                        Loading tables...
-                      </p>
-                    ) : selectableTables.length > 0 ? (
-                      selectableTables.map((table) => {
-                        const checked = tableIds.includes(
-                          table.table_id.toString(),
-                        );
-                        return (
-                          <label
-                            key={table.table_id}
-                            className="flex items-center gap-2 text-sm"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                setTableIds((current) =>
-                                  e.target.checked
-                                    ? [...current, table.table_id.toString()]
-                                    : current.filter(
-                                        (id) =>
-                                          id !== table.table_id.toString(),
-                                      ),
-                                );
-                                setSelectedTime("");
-                              }}
-                            />
-                            <span>
-                              {table.table_number} · {table.table_name} (
-                              {table.capacity} seats)
-                            </span>
-                          </label>
-                        );
-                      })
-                    ) : (
-                      <p className="text-destructive text-sm">
-                        {selectedTime
-                          ? "No tables are available for the selected time range."
-                          : "No active tables are available for this date."}
-                      </p>
-                    )}
-                  </div>
-                  {selectedTableIds.length > 0 && (
-                    <p className="text-muted-foreground text-xs">
-                      {selectedTableIds.length} table
-                      {selectedTableIds.length > 1 ? "s" : ""} selected ·{" "}
-                      {selectedTableCapacity} seats
-                    </p>
-                  )}
-                  {selectedTableIds.length > 0 &&
-                    selectedTableCapacity < Number(partySize) && (
-                      <p className="text-destructive text-xs">
-                        Select another table to seat this party.
-                      </p>
-                    )}
-                </div>
-                <div className="space-y-2">
-                  <Label>Available Times</Label>
-                  {availableTimes.length > 0 ? (
-                    <div className="grid grid-cols-3 gap-2">
-                      {availableTimes.map((time) => (
-                        <button
-                          key={time}
-                          type="button"
-                          aria-pressed={selectedTime === time}
-                          onClick={() => {
-                            setSelectedTime(time);
-                            setEndTime(
-                              addMinutesToTime(
-                                time,
-                                RESERVATION_DURATION_MINUTES,
-                              ),
-                            );
-                          }}
-                          className={`h-10 rounded-md border text-sm transition-colors ${
-                            selectedTime === time
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "hover:bg-accent"
-                          }`}
-                        >
-                          {formatTime(time)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground rounded-md border border-dashed px-3 py-3 text-sm">
-                      {selectedTableIds.length > 0
-                        ? "No available times for this table on the selected date."
-                        : "Choose one or more tables to see ls."}
-                    </p>
-                  )}
-                </div>
-                {selectedTime && (
-                  <div className="space-y-1">
-                    <Label htmlFor="reservation-end-time">End Time</Label>
-                    <Input
-                      id="reservation-end-time"
-                      type="time"
-                      value={endTime}
-                      onChange={(e) => {
-                        const nextEndTime = e.target.value;
-                        setEndTime(nextEndTime);
-                        if (nextEndTime && nextEndTime !== selectedTime) {
-                          setTableIds((current) =>
-                            current.filter((id) =>
-                              isTimeAvailable(
-                                selectedDate,
-                                selectedTime,
-                                Number(id),
-                                nextEndTime,
-                                editingReservationId,
-                              ),
-                            ),
-                          );
-                        }
-                      }}
-                      required
-                    />
-                    {endTime &&
-                      endTime !== selectedTime &&
-                      !intervalAvailable && (
-                        <p className="text-destructive text-xs">
-                          The selected tables are not available for this time
-                          range.
-                        </p>
-                      )}
-                  </div>
-                )}
-                <div className="space-y-1">
-                  <Label htmlFor="reservation-source">Source</Label>
-                  <select
-                    id="reservation-source"
-                    className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                    value={source}
-                    onChange={(e) => setSource(e.target.value)}
-                    required
-                  >
-                    <option value="Walk-in">Walk-in</option>
-                    <option value="Phone">Phone</option>
-                    <option value="Online">Online</option>
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <Label htmlFor="reservation-occasion">
-                    Occasion (Optional)
-                  </Label>
-                  <Input
-                    id="reservation-occasion"
-                    placeholder="e.g. Birthday, Anniversary"
-                    value={occasion}
-                    onChange={(e) => setOccasion(e.target.value)}
-                  />
-                </div>
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={
-                    submitting ||
-                    !customerName.trim() ||
-                    selectedTableIds.length === 0 ||
-                    selectedTableCapacity < Number(partySize) ||
-                    !selectedTime ||
-                    !endTime ||
-                    !intervalAvailable
-                  }
-                >
-                  {submitting && (
-                    <Loader2 className="size-4 animate-spin mr-2" />
-                  )}{" "}
-                  {editingReservationId
-                    ? "Update Reservation"
-                    : "Save Reservation"}
-                </Button>
-              </form>
-            </DialogContent>
-
+            <Button onClick={() => openBooking()} className="gap-1.5">
+              <Plus className="size-4" /> New reservation
+            </Button>
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold px-3 py-1.5 bg-white dark:bg-neutral-900 border rounded-lg shadow-sm">
                 {monthNames[month]} {year}
@@ -792,6 +748,7 @@ export default function ReservationsPage() {
                   size="icon"
                   onClick={prevMonth}
                   className="rounded-none h-9 w-9"
+                  aria-label="Previous month"
                 >
                   <ChevronLeft className="size-4" />
                 </Button>
@@ -801,6 +758,7 @@ export default function ReservationsPage() {
                   size="icon"
                   onClick={nextMonth}
                   className="rounded-none h-9 w-9"
+                  aria-label="Next month"
                 >
                   <ChevronRight className="size-4" />
                 </Button>
@@ -846,7 +804,9 @@ export default function ReservationsPage() {
                     );
                   const dayNumber = parseInt(dateStr.split("-")[2], 10);
                   const dayReservations = reservations.filter(
-                    (r) => r.date === dateStr,
+                    (reservation) =>
+                      getServiceDate(toLocalDateTime(reservation.startAt)) ===
+                      dateStr,
                   );
                   const hasBookings = dayReservations.length > 0;
                   const hasAvailability = hasAvailableTable(dateStr);
@@ -998,6 +958,336 @@ export default function ReservationsPage() {
           </Card>
         </div>
       </section>
+
+      {/* ───────────── Reservation dialog ───────────── */}
+      <DialogContent className="grid-rows-[auto_minmax(0,1fr)] overflow-hidden max-h-[calc(100dvh-2rem)] sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>
+            {editingReservationId ? "Edit reservation" : "New reservation"}
+          </DialogTitle>
+        </DialogHeader>
+        <form
+          onSubmit={handleSubmitReservation}
+          className="flex min-h-0 flex-col"
+        >
+          <div className="min-h-0 flex-1 space-y-6 overflow-y-auto overscroll-contain pr-2 pb-2">
+            {/* Date + guests */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="reservation-date">Date</Label>
+                <Input
+                  id="reservation-date"
+                  type="date"
+                  className="h-10"
+                  min={editingReservationId ? undefined : dateKey(now)}
+                  value={selectedDate}
+                  onChange={(e) => changeBookingDate(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reservation-party-size">Guests</Label>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-10 shrink-0"
+                    aria-label="Fewer guests"
+                    disabled={guestCount <= 1}
+                    onClick={() =>
+                      changePartySize(String(Math.max(1, guestCount - 1)))
+                    }
+                  >
+                    <Minus className="size-4" />
+                  </Button>
+                  <Input
+                    id="reservation-party-size"
+                    type="number"
+                    min="1"
+                    inputMode="numeric"
+                    className="h-10 text-center"
+                    value={partySize}
+                    onChange={(e) => changePartySize(e.target.value)}
+                    required
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className="size-10 shrink-0"
+                    aria-label="More guests"
+                    onClick={() => changePartySize(String(guestCount + 1))}
+                  >
+                    <Plus className="size-4" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* Step 1 — tables */}
+            <div className="space-y-3">
+              <StepHeading
+                step={1}
+                title="Choose tables"
+                hint={`Pick one or more tables that seat ${guestCount || "your"} guest${guestCount === 1 ? "" : "s"}.`}
+                done={tablesFitParty}
+              />
+              {tablesLoading ? (
+                <p className="text-muted-foreground flex items-center gap-2 text-sm">
+                  <Loader2 className="size-4 animate-spin" /> Loading tables…
+                </p>
+              ) : tables.length === 0 ? (
+                <p className="text-destructive text-sm">
+                  No active tables found. Add a table first.
+                </p>
+              ) : (
+                <div className="grid max-h-56 grid-cols-2 gap-2 overflow-y-auto pr-1 sm:grid-cols-3">
+                  {tables.map((table) => {
+                    const checked = tableIds.includes(
+                      table.table_id.toString(),
+                    );
+                    const available = selectableTableIds.has(table.table_id);
+                    return (
+                      <button
+                        key={table.table_id}
+                        type="button"
+                        disabled={!available}
+                        aria-pressed={checked}
+                        onClick={() => toggleTable(table)}
+                        className={`relative flex flex-col items-start gap-0.5 rounded-lg border p-3 text-left transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+                          checked
+                            ? "border-primary bg-primary/5 ring-2 ring-primary/30"
+                            : available
+                              ? "bg-background hover:border-primary/50 hover:bg-muted/50"
+                              : "cursor-not-allowed bg-muted/40 opacity-50"
+                        }`}
+                      >
+                        {checked && (
+                          <span className="absolute right-2 top-2 flex size-4 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                            <Check className="size-3" />
+                          </span>
+                        )}
+                        <span className="text-sm font-semibold">
+                          {table.table_number}
+                        </span>
+                        <span className="text-muted-foreground w-full truncate text-xs">
+                          {table.table_name}
+                        </span>
+                        <span className="mt-1 flex items-center gap-1 text-xs font-medium">
+                          <Users className="size-3" />
+                          {table.capacity} seats
+                        </span>
+                        {!available && (
+                          <span className="text-destructive text-[11px]">
+                            Booked
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {selectedTableIds.length > 0 && (
+                <p
+                  aria-live="polite"
+                  className={`text-xs ${
+                    tablesFitParty
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : "text-destructive"
+                  }`}
+                >
+                  {selectedTableIds.length} table
+                  {selectedTableIds.length > 1 ? "s" : ""} selected ·{" "}
+                  {selectedTableCapacity} of {guestCount} seats
+                  {tablesFitParty
+                    ? " — enough room"
+                    : " — add another table to seat everyone"}
+                </p>
+              )}
+            </div>
+
+            {/* Step 2 — time */}
+            <div
+              className={`space-y-3 transition-opacity ${tablesFitParty ? "" : "opacity-50"}`}
+            >
+              <StepHeading
+                step={2}
+                title="Pick a time"
+                hint={
+                  tablesFitParty
+                    ? `${formatDate(selectedDate)} · end time defaults to 90 minutes later.`
+                    : "Choose tables first to see open times."
+                }
+                done={Boolean(selectedTime) && intervalAvailable}
+              />
+              {tablesFitParty && availableTimes.length === 0 ? (
+                <p className="text-destructive text-sm">
+                  These tables have no open start times on this date. Try other
+                  tables or another day.
+                </p>
+              ) : (
+                <div
+                  role="radiogroup"
+                  aria-label="Start time"
+                  className="grid grid-cols-3 gap-2 sm:grid-cols-4"
+                >
+                  {(tablesFitParty ? availableTimes : SERVICE_TIMES).map(
+                    (time) => (
+                      <button
+                        key={time}
+                        type="button"
+                        role="radio"
+                        aria-checked={selectedTime === time}
+                        disabled={!tablesFitParty}
+                        onClick={() => chooseStartTime(time)}
+                        className={`h-9 rounded-md border text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+                          selectedTime === time
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "bg-background hover:border-primary/50 hover:bg-muted/50 disabled:cursor-not-allowed"
+                        }`}
+                      >
+                        {formatTime(time)}
+                      </button>
+                    ),
+                  )}
+                </div>
+              )}
+              <div className="space-y-1.5">
+                <Label htmlFor="reservation-end-time">Ends at</Label>
+                <select
+                  id="reservation-end-time"
+                  className={selectClass}
+                  disabled={!selectedTime || !tablesFitParty}
+                  value={availableEndTimes.includes(endTime) ? endTime : ""}
+                  onChange={(e) => setEndTime(e.target.value)}
+                  required
+                >
+                  <option value="" disabled>
+                    {!selectedTime
+                      ? "Choose a start time first"
+                      : availableEndTimes.length === 0
+                        ? "No available end times"
+                        : "Choose an end time"}
+                  </option>
+                  {availableEndTimes.map((time) => (
+                    <option key={time} value={time}>
+                      {formatTime(time)}
+                    </option>
+                  ))}
+                </select>
+                {endTime && endTime !== selectedTime && !intervalAvailable && (
+                  <p className="text-destructive text-xs">
+                    The selected tables are not available for this time range.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Step 3 — guest details */}
+            <div className="space-y-3">
+              <StepHeading
+                step={3}
+                title="Guest details"
+                done={Boolean(customerName.trim())}
+              />
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div className="space-y-1.5">
+                  <Label htmlFor="reservation-customer-name">Name</Label>
+                  <Input
+                    id="reservation-customer-name"
+                    className="h-10"
+                    placeholder="Customer name"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="reservation-customer-phone">
+                    Phone (optional)
+                  </Label>
+                  <Input
+                    id="reservation-customer-phone"
+                    className="h-10"
+                    type="tel"
+                    autoComplete="tel"
+                    placeholder="Phone number"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Booked via</Label>
+                <div
+                  role="radiogroup"
+                  aria-label="Booking source"
+                  className="grid grid-cols-3 gap-1 rounded-lg bg-muted p-1"
+                >
+                  {SOURCES.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      role="radio"
+                      aria-checked={source === option}
+                      onClick={() => setSource(option)}
+                      className={`h-8 rounded-md text-sm font-medium transition-colors outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 ${
+                        source === option
+                          ? "bg-background shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="reservation-occasion">
+                  Occasion (optional)
+                </Label>
+                <Input
+                  id="reservation-occasion"
+                  className="h-10"
+                  placeholder="e.g. Birthday, Anniversary"
+                  value={occasion}
+                  onChange={(e) => setOccasion(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Sticky footer: summary + save */}
+          <div className="space-y-2 border-t bg-background pt-3">
+            {selectedTime && endTime && intervalAvailable && (
+              <p className="text-muted-foreground flex flex-wrap items-center gap-x-2 text-xs">
+                <span className="font-medium text-foreground">
+                  {formatDate(selectedDate)}
+                </span>
+                <span>
+                  {formatTime(selectedTime)} – {formatTime(endTime)}
+                </span>
+                <span>
+                  Table {selectedTableLabels} · {guestCount} guest
+                  {guestCount === 1 ? "" : "s"}
+                </span>
+              </p>
+            )}
+            {missingStep && (
+              <p className="text-muted-foreground text-xs">{missingStep}.</p>
+            )}
+            <Button
+              type="submit"
+              className="h-10 w-full"
+              disabled={submitting || Boolean(missingStep)}
+            >
+              {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+              {editingReservationId ? "Update reservation" : "Save reservation"}
+            </Button>
+          </div>
+        </form>
+      </DialogContent>
     </Dialog>
   );
 }
