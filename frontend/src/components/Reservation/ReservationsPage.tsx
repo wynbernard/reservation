@@ -214,6 +214,8 @@ export default function ReservationsPage() {
   const [selectedDate, setSelectedDate] = useState(() => dateKey(now));
   const [reservations, setReservations] = useState<Reservation[]>([]);
   const [tables, setTables] = useState<RestaurantTable[]>([]);
+  const [blockedDates, setBlockedDates] = useState<Set<string>>(new Set());
+  const [blockingDay, setBlockingDay] = useState(false);
   const [tablesLoading, setTablesLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -321,8 +323,36 @@ export default function ReservationsPage() {
       }
     }
 
+    async function loadBlockedDates() {
+      try {
+        const res = await fetch(apiUrl("Reservation/BlockDay.php"));
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          throw new Error(data.message || "Failed to load blocked dates");
+        }
+        if (active) {
+          setBlockedDates(
+            new Set(
+              (data.data as Array<{ blocked_date: string }>).map(
+                (item) => item.blocked_date,
+              ),
+            ),
+          );
+        }
+      } catch (err) {
+        if (active) {
+          setError(
+            err instanceof Error
+              ? err.message
+              : "Failed to load blocked dates",
+          );
+        }
+      }
+    }
+
     void loadReservations();
     void loadTables();
+    void loadBlockedDates();
     return () => {
       active = false;
     };
@@ -344,6 +374,7 @@ export default function ReservationsPage() {
     intervalEndTime?: string,
     ignoredReservationId?: number | null,
   ) {
+    if (blockedDates.has(date)) return false;
     const start = toServiceDateTime(date, time);
     const end = intervalEndTime
       ? toServiceDateTime(date, intervalEndTime)
@@ -478,6 +509,12 @@ export default function ReservationsPage() {
           : "";
 
   function openBooking(date = selectedDate) {
+    if (blockedDates.has(date)) {
+      setSelectedDate(date);
+      setCurrentDate(new Date(`${date}T00:00:00`));
+      alert(`${formatDate(date)} is unavailable for new reservations.`);
+      return;
+    }
     setSelectedDate(date);
     setCurrentDate(new Date(`${date}T00:00:00`));
     setEditingReservationId(null);
@@ -623,6 +660,10 @@ export default function ReservationsPage() {
 
   const handleSubmitReservation = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (blockedDates.has(selectedDate)) {
+      alert(`${formatDate(selectedDate)} is unavailable for new reservations.`);
+      return;
+    }
     if (missingStep) {
       alert(missingStep);
       return;
@@ -676,6 +717,47 @@ export default function ReservationsPage() {
     }
   };
 
+  async function toggleBlockSelectedDay() {
+    if (selectedDate < dateKey(now)) return;
+    const isBlocked = blockedDates.has(selectedDate);
+    if (
+      isBlocked &&
+      !confirm(`Make ${formatDate(selectedDate)} available for reservations?`)
+    ) {
+      return;
+    }
+
+    setBlockingDay(true);
+    try {
+      const res = await fetch(apiUrl("Reservation/BlockDay.php"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: isBlocked ? "unblock" : "block",
+          date: selectedDate,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.message || "Failed to update availability");
+      }
+      setBlockedDates((current) => {
+        const next = new Set(current);
+        if (isBlocked) next.delete(selectedDate);
+        else next.add(selectedDate);
+        return next;
+      });
+    } catch (err) {
+      alert(
+        err instanceof Error
+          ? err.message
+          : "Failed to update availability",
+      );
+    } finally {
+      setBlockingDay(false);
+    }
+  }
+
   const handleDelete = async (id: number) => {
     if (!confirm("Are you sure you want to delete this reservation?")) return;
     setDeletingId(id);
@@ -718,6 +800,7 @@ export default function ReservationsPage() {
     (reservation) =>
       getServiceDate(toLocalDateTime(reservation.startAt)) === selectedDate,
   );
+  const selectedDayIsBlocked = blockedDates.has(selectedDate);
 
   const selectClass =
     "border-input bg-background h-10 w-full rounded-md border px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50";
@@ -810,9 +893,11 @@ export default function ReservationsPage() {
                   );
                   const hasBookings = dayReservations.length > 0;
                   const hasAvailability = hasAvailableTable(dateStr);
+                  const isBlocked = blockedDates.has(dateStr);
                   const hasNoAvailability =
                     availabilityChecked &&
                     dateStr >= dateKey(now) &&
+                    !isBlocked &&
                     !hasAvailability;
                   const isSelected = selectedDate === dateStr;
                   const isPastDate = dateStr < dateKey(now);
@@ -822,11 +907,11 @@ export default function ReservationsPage() {
                       key={dateStr}
                       type="button"
                       onClick={() =>
-                        isPastDate || hasNoAvailability
+                        isPastDate
                           ? setSelectedDate(dateStr)
                           : openBooking(dateStr)
                       }
-                      aria-label={`${formatDate(dateStr)}${hasNoAvailability ? ", unavailable for new bookings" : ""}${hasBookings ? `, ${dayReservations.length} booking${dayReservations.length > 1 ? "s" : ""}` : ", no bookings"}`}
+                      aria-label={`${formatDate(dateStr)}${isBlocked ? ", unavailable" : hasNoAvailability ? ", unavailable for new bookings" : ""}${hasBookings ? `, ${dayReservations.length} booking${dayReservations.length > 1 ? "s" : ""}` : ", no bookings"}`}
                       className={`h-24 p-2 rounded-xl border flex flex-col justify-between text-left transition-all ${
                         isSelected
                           ? "border-primary bg-primary/5 ring-2 ring-primary/20 shadow-sm"
@@ -858,6 +943,11 @@ export default function ReservationsPage() {
                               Available
                             </div>
                           )}
+                          {isBlocked && (
+                            <div className="text-[10px] font-semibold bg-red-100 text-red-700 px-1.5 py-0.5 rounded truncate dark:bg-red-950/40 dark:text-red-400">
+                              Unavailable
+                            </div>
+                          )}
                           {hasNoAvailability && (
                             <div className="text-[10px] font-semibold bg-red-50 text-red-700 px-1.5 py-0.5 rounded truncate dark:bg-red-950/40 dark:text-red-400">
                               Unavailable
@@ -873,11 +963,22 @@ export default function ReservationsPage() {
           </Card>
 
           <Card className="flex flex-col">
-            <CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
               <CardTitle className="text-base font-semibold flex items-center gap-2">
                 <CalendarCheck className="size-4 text-primary" /> Bookings for{" "}
                 {selectedDate}
               </CardTitle>
+              <Button
+                type="button"
+                variant={selectedDayIsBlocked ? "outline" : "destructive"}
+                size="sm"
+                className="shrink-0"
+                disabled={blockingDay || selectedDate < dateKey(now)}
+                onClick={() => void toggleBlockSelectedDay()}
+              >
+                {blockingDay && <Loader2 className="mr-1 size-3.5 animate-spin" />}
+                {selectedDayIsBlocked ? "Make available" : "Block day"}
+              </Button>
             </CardHeader>
             <CardContent className="flex-1 space-y-3 overflow-y-auto max-h-[450px]">
               {selectedDateReservations.length > 0 ? (

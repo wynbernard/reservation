@@ -49,6 +49,13 @@ if ($customer_name === '' || !$party_size || count($table_ids) < 1 || !$start_at
 
 try {
     $pdo = Database::getInstance();
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS blocked_reservation_dates (
+            blocked_date DATE NOT NULL PRIMARY KEY,
+            reason VARCHAR(255) NOT NULL DEFAULT '',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB"
+    );
     $start = DateTime::createFromFormat('Y-m-d H:i:s', $start_at);
     if (!$start) {
         http_response_code(400);
@@ -65,6 +72,26 @@ try {
     } else {
         $end = clone $start;
         $end->modify('+90 minutes');
+    }
+
+    $blockedStmt = $pdo->prepare(
+        "SELECT blocked_date
+         FROM blocked_reservation_dates
+         WHERE blocked_date = ?
+         LIMIT 1"
+    );
+    $blockedDate = clone $start;
+    if ((int)$blockedDate->format('H') < 11) {
+        $blockedDate->modify('-1 day');
+    }
+    $blockedStmt->execute([$blockedDate->format('Y-m-d')]);
+    if ($blockedStmt->fetchColumn()) {
+        http_response_code(409);
+        echo json_encode([
+            "success" => false,
+            "message" => "This day is unavailable for reservations"
+        ]);
+        exit();
     }
 
     $pdo->beginTransaction();

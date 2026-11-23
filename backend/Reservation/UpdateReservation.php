@@ -60,6 +60,32 @@ try {
     }
 
     $pdo = Database::getInstance();
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS blocked_reservation_dates (
+            blocked_date DATE NOT NULL PRIMARY KEY,
+            reason VARCHAR(255) NOT NULL DEFAULT '',
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB"
+    );
+    $blockedStmt = $pdo->prepare(
+        "SELECT blocked_date
+         FROM blocked_reservation_dates
+         WHERE blocked_date = ?
+         LIMIT 1"
+    );
+    $blockedDate = clone $start;
+    if ((int)$blockedDate->format('H') < 11) {
+        $blockedDate->modify('-1 day');
+    }
+    $blockedStmt->execute([$blockedDate->format('Y-m-d')]);
+    if ($blockedStmt->fetchColumn()) {
+        http_response_code(409);
+        echo json_encode([
+            "success" => false,
+            "message" => "This day is unavailable for reservations"
+        ]);
+        exit();
+    }
     $pdo->beginTransaction();
 
     $reservationStmt = $pdo->prepare(
